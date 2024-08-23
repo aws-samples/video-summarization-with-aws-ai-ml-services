@@ -1,0 +1,71 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+  KmsKeyArn:
+    Type: String
+
+Resources:
+  DynamodbTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: True
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref KmsKeyArn
+      AttributeDefinitions:
+        - AttributeName: TaskId
+          AttributeType: S
+        - AttributeName: UserId
+          AttributeType: S
+        - AttributeName: TranscribeTaskId
+          AttributeType: S
+        - AttributeName: RekognitionTaskId
+          AttributeType: S
+        - AttributeName: PollyTaskId
+          AttributeType: S
+        - AttributeName: MediaConvertTaskId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: TaskId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ExpireTime
+        Enabled: True
+      GlobalSecondaryIndexes:
+        - IndexName: UserIdGSI
+          KeySchema:
+            - AttributeName: UserId
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: TranscribeGSI
+          KeySchema:
+            - AttributeName: TranscribeTaskId
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: RekognitionGSI
+          KeySchema:
+            - AttributeName: RekognitionTaskId
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: PollyGSI
+          KeySchema:
+            - AttributeName: PollyTaskId
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: MediaConvertGSI
+          KeySchema:
+            - AttributeName: MediaConvertTaskId
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+
+Outputs:
+  DynamodbTable:
+    Value: !Ref DynamodbTable

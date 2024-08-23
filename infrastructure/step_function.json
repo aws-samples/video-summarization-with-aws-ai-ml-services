@@ -1,0 +1,247 @@
+{
+  "Comment": "A description of my state machine",
+  "StartAt": "Start Transcribe Task And Wait Callback",
+  "States": {
+    "Start Transcribe Task And Wait Callback": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "${TranscribeArn}",
+        "Payload": {
+          "TaskToken.$": "$$.Task.Token",
+          "VSHParams.$": "$"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2
+        }
+      ],
+      "ResultPath": "$.TranscribeParams",
+      "TimeoutSeconds": 600,
+      "Next": "Summarize Text",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "Notify failed task",
+          "ResultPath": "$.failedTaskParams"
+        }
+      ]
+    },
+    "Notify failed task": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "OutputPath": "$.Payload",
+      "Parameters": {
+        "Payload.$": "$",
+        "FunctionName": "${FailedtaskArn}"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "Fail"	
+    },	
+    "Fail": {	
+      "Type": "Fail"
+    },
+    "Summarize Text": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "Payload.$": "$",
+        "FunctionName": "${SummarizetextArn}"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2
+        }
+      ],
+      "ResultPath": null,
+      "Next": "Text To Speech With Polly",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "Notify failed task",
+          "ResultPath": "$.failedTaskParams"
+        }
+      ]
+    },
+    "Text To Speech With Polly": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "${Text2speechArn}",
+        "Payload": {
+          "TaskToken.$": "$$.Task.Token",
+          "VSHParams.$": "$"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2
+        }
+      ],
+      "ResultPath": "$.PollySSMLParams",
+      "TimeoutSeconds": 600,
+      "Next": "Get Video Frames",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "Notify failed task",
+          "ResultPath": "$.failedTaskParams"
+        }
+      ]
+    },
+    "Get Video Frames": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "Payload": {
+          "TaskToken.$": "$$.Task.Token",
+          "VSHParams.$": "$"
+        },
+        "FunctionName": "${GetframesArn}"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2
+        }
+      ],
+      "ResultPath": "$.PollyAudioParams",
+      "TimeoutSeconds": 600,
+      "Next": "Output Video With MediaConvert",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "Notify failed task",
+          "ResultPath": "$.failedTaskParams"
+        }
+      ]
+    },
+    "Output Video With MediaConvert": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "${OutputvideoArn}",
+        "Payload": {
+          "TaskToken.$": "$$.Task.Token",
+          "VSHParams.$": "$"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2
+        }
+      ],
+      "TimeoutSeconds": 600,
+      "ResultPath": null,
+      "Next": "Add Narrator Voice And Background Music (Optional)",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "Notify failed task",
+          "ResultPath": "$.failedTaskParams"
+        }
+      ]
+    },
+    "Add Narrator Voice And Background Music (Optional)": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "Payload": {
+          "TaskToken.$": "$$.Task.Token",
+          "VSHParams.$": "$"
+        },
+        "FunctionName": "${AddaudioArn}"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2
+        }
+      ],
+      "ResultPath": null,
+      "TimeoutSeconds": 600,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "Notify failed task",
+          "ResultPath": "$.failedTaskParams"
+        }
+      ],
+      "Next": "Success"	
+    },	
+    "Success": {	
+      "Type": "Succeed"
+    }
+  }
+}

@@ -1,0 +1,36 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Resources:
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: True
+          RequireUppercase: True
+          RequireNumbers: True
+          RequireSymbols: True
+          TemporaryPasswordValidityDays: 1
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub video-summarization-hub-${AWS::AccountId}
+      UserPoolId: !Ref UserPool
+
+Outputs:
+  UserPoolsId:
+    Value: !Ref UserPool
+
+  UserPoolsWebClientId:
+    Value: !Ref UserPoolClient

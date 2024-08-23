@@ -1,0 +1,221 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Resources:
+  S3Audio:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+      LoggingConfiguration:
+        DestinationBucketName: !Ref S3Logging
+        LogFilePrefix: "audio-logs/"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  S3AudioPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3Audio
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Deny
+            Action: s3:*
+            Resource:
+              - !GetAtt S3Audio.Arn
+              - !Sub ${S3Audio.Arn}/*
+            Condition:
+              Bool:
+                "aws:SecureTransport": False
+            Principal: "*"
+
+  S3Logging:
+    Type: AWS::S3::Bucket
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W35
+            reason: S3 Logging bucket does not need logging configured
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerPreferred
+
+  S3LoggingPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3Logging
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Deny
+            Action: s3:*
+            Resource:
+              - !GetAtt S3Logging.Arn
+              - !Sub ${S3Logging.Arn}/*
+            Condition:
+              Bool:
+                "aws:SecureTransport": False
+            Principal: "*"
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action:
+              - s3:PutObject
+              - s3:GetBucketAcl
+              - s3:PutBucketAcl
+            Resource:
+              - !GetAtt S3Logging.Arn
+              - !Sub ${S3Logging.Arn}/*
+            Condition:
+              StringEquals:
+                "AWS:SourceArn": !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/*
+
+  S3Transcripts:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+      LoggingConfiguration:
+        DestinationBucketName: !Ref S3Logging
+        LogFilePrefix: "transcripts-logs/"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  S3TranscriptsPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3Transcripts
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Deny
+            Action: s3:*
+            Resource:
+              - !GetAtt S3Transcripts.Arn
+              - !Sub ${S3Transcripts.Arn}/*
+            Condition:
+              Bool:
+                "aws:SecureTransport": False
+            Principal: "*"
+
+  S3VideosInput:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+      LoggingConfiguration:
+        DestinationBucketName: !Ref S3Logging
+        LogFilePrefix: "videos-input-logs/"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      CorsConfiguration:
+        CorsRules:
+          - MaxAge: 300
+            AllowedHeaders:
+              - "*"
+            AllowedMethods:
+              - "POST"
+            AllowedOrigins:
+              - "*"
+      VersioningConfiguration:
+        Status: Enabled
+
+  S3VideosInputPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3VideosInput
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Deny
+            Action: s3:*
+            Resource:
+              - !GetAtt S3VideosInput.Arn
+              - !Sub ${S3VideosInput.Arn}/*
+            Condition:
+              Bool:
+                "aws:SecureTransport": False
+            Principal: "*"
+
+  S3VideosOutput:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+      LoggingConfiguration:
+        DestinationBucketName: !Ref S3Logging
+        LogFilePrefix: "video-output-logs/"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      CorsConfiguration:
+        CorsRules:
+          - MaxAge: 300
+            AllowedHeaders:
+              - "*"
+            AllowedMethods:
+              - "POST"
+            AllowedOrigins:
+              - "*"
+
+  S3VideosOutputPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3VideosOutput
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Deny
+            Action: s3:*
+            Resource:
+              - !GetAtt S3VideosOutput.Arn
+              - !Sub ${S3VideosOutput.Arn}/*
+            Condition:
+              Bool:
+                "aws:SecureTransport": False
+            Principal: "*"
+
+Outputs:
+  S3Audio:
+    Value: !Ref S3Audio
+
+  S3Logging:
+    Value: !Ref S3Logging
+
+  S3Transcripts:
+    Value: !Ref S3Transcripts
+
+  S3VideosInput:
+    Value: !Ref S3VideosInput
+
+  S3VideosOutput:
+    Value: !Ref S3VideosOutput

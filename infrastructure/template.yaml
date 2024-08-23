@@ -1,0 +1,1110 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Transform: AWS::Serverless-2016-10-31
+
+Parameters:
+  BedrockEndpointModel:
+    Type: String
+    Default: anthropic.claude-v2
+  BedrockEmbeddingModel:
+    Type: String
+    Default: amazon.titan-embed-text-v1
+  TaskExpireTime:
+    Type: Number
+    Default: 86400
+
+Globals:
+  Function:
+    Timeout: 300
+    MemorySize: 512
+    Handler: app.lambda_handler
+    Runtime: python3.12
+    ReservedConcurrentExecutions: 20
+    KmsKeyArn: !GetAtt KmsKey.Arn
+    Tracing: Active
+
+Resources:
+  KmsKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: KMS key for encryption
+      EnableKeyRotation: True
+      PendingWindowInDays: 7
+      KeyPolicy:
+        Version: 2012-10-17
+        Id: cloudwatch_kms_key
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: "*"
+          - Effect: Allow
+            Principal:
+              Service: !Sub logs.${AWS::Region}.amazonaws.com
+            Action:
+              - kms:Encrypt*
+              - kms:Decrypt*
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:Describe*
+            Resource: "*"
+            Condition:
+              ArnLike:
+                "kms:EncryptionContext:aws:logs:arn": !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+
+  Addaudio:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: VPC not required
+          - id: W11
+            reason: MediaConvert job supports only * resources
+    Properties:
+      CodeUri: functions/addaudio
+      Environment:
+        Variables:
+          bucket_videos: !GetAtt StorageStack.Outputs.S3VideosInput
+          bucket_audio: !GetAtt StorageStack.Outputs.S3Audio
+          bucket_transcripts: !GetAtt StorageStack.Outputs.S3Transcripts
+          bucket_output_videos: !GetAtt StorageStack.Outputs.S3VideosOutput
+          media_convert_queue: !GetAtt MediaConvertQueueRelease.Arn
+          vsh_dynamodb_table: !GetAtt DatabaseStack.Outputs.DynamodbTable
+          iam_role: !GetAtt MediaConvertRole.Arn
+      Policies:
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource:
+                - !Sub arn:aws:s3:::${StorageStack.Outputs.S3VideosInput}/*
+                - !Sub arn:aws:s3:::${StorageStack.Outputs.S3VideosOutput}/*
+                - !Sub arn:aws:s3:::${StorageStack.Outputs.S3Audio}/*
+                - !Sub arn:aws:s3:::${StorageStack.Outputs.S3Transcripts}/*
+            - Effect: Allow
+              Action:
+                - dynamodb:UpdateItem
+              Resource:
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DatabaseStack.Outputs.DynamodbTable}
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DatabaseStack.Outputs.DynamodbTable}/*
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:*
+            - Effect: Allow
+              Action:
+                - iam:PassRole
+              Resource: !GetAtt MediaConvertRole.Arn
+              Condition:
+                StringLike:
+                  "iam:PassedToService":
+                    - mediaconvert.amazonaws.com
+            - Effect: Allow
+              Action:
+                - mediaconvert:CreateJob
+                - mediaconvert:DescribeEndpoints
+              Resource: arn:aws:mediaconvert:*
+
+  AddaudioLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${Addaudio}
+      KmsKeyId: !GetAtt KmsKey.Arn
+      RetentionInDays: 365
+
+  EventbridgeMediaconvert:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: VPC not required
+    Properties:
+      CodeUri: functions/eventbridge_mediaconvert
+      Environment:
+        Variables:
+          vsh_dynamodb_table: !GetAtt DatabaseStack.Outputs.DynamodbTable
+          media_convert_queue_release: !GetAtt MediaConvertQueueRelease.Arn
+          bucket_output_videos: !GetAtt StorageStack.Outputs.S3VideosOutput
+          task_expire_time: !Ref TaskExpireTime
+      Policies:
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource: !Sub arn:aws:s3:::${StorageStack.Outputs.S3VideosOutput}/*
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:UpdateItem
+              Resource:
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DatabaseStack.Outputs.DynamodbTable}
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DatabaseStack.Outputs.DynamodbTable}/*
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:*
+            - Effect: Allow
+              Action:
+                - states:Create*
+                - states:Delete*
+                - states:Describe*
+                - states:List*
+                - states:Start*
+                - states:Send*
+              Resource: !Sub arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*
+      Events:
+        EventBridge:
+          Type: EventBridgeRule
+          Properties:
+            Pattern:
+              source:
+                - aws.mediaconvert
+              detail-type:
+                - MediaConvert Job State Change
+              detail:
+                status:
+                  - COMPLETE
+                  - ERROR
+
+  EventbridgeMediaconvertLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${EventbridgeMediaconvert}
+      KmsKeyId: !GetAtt KmsKey.Arn
+      RetentionInDays: 365
+
+  EventbridgeTranscribe:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: VPC not required
+    Properties:
+      CodeUri: functions/eventbridge_transcribe
+      Environment:
+        Variables:
+          vsh_dynamodb_table: !GetAtt DatabaseStack.Outputs.DynamodbTable
+      Policies:
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+              Resource:
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DatabaseStack.Outputs.DynamodbTable}
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DatabaseStack.Outputs.DynamodbTable}/*
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:*
+            - Effect: Allow
+              Action:
+                - states:Create*
+                - states:Delete*
+                - states:Describe*
+                - states:List*
+                - states:Start*
+                - states:Send*
+              Resource: !Sub arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*
+      Events:
+        EventBridge:
+          Type: EventBridgeRule
+          Properties:
+            Pattern:
+              source:
+                - aws.transcribe
+              detail-type:
+                - Transcribe Job State Change
+              detail:
+                TranscriptionJobStatus:
+                  - COMPLETED
+                  - FAILED
+
+  EventbridgeTranscribeLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${EventbridgeTranscribe}
+      KmsKeyId: !GetAtt KmsKey.Arn
+      RetentionInDays: 365
+
+  Failedtask:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: VPC not required
+    Properties:
+      CodeUri: functions/failedtask
+      Environment:
+        Variables:
+          vsh_dynamodb_table: !GetAtt DatabaseStack.Outputs.DynamodbTable
+      Policies:
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:UpdateItem
+              Resource:
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DatabaseStack.Outputs.DynamodbTable}
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DatabaseStack.Outputs.DynamodbTable}/*
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:*
+  FailedtaskLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${Failedtask}
+      KmsKeyId: !GetAtt KmsKey.Arn
+      RetentionInDays: 365
+
+  Getframes:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: VPC not required
+          - id: W11
+            reason: Polly action doesn't take resource
+    Properties:
+      CodeUri: functions/getframes
+      Layers:
+        - !Sub arn:aws:lambda:${AWS::Region}:336392948345:layer:AWSSDKPandas-Python312:4
+      Timeout: 900
+      Environment:
+        Variables:
+          bucket_audio: !GetAtt StorageStack.Outputs.S3Audio
+          bucket_transcripts: !GetAtt StorageStack.Outputs.S3Transcripts
+          vsh_dynamodb_table: !GetAtt DatabaseStack.Outputs.DynamodbTable
+          SNSTopic: !GetAtt RequestManagementStack.Outputs.SnsArn
+          bedrock_endpoint_region: !Ref AWS::Region
+          bedrock_embedding_model: !Ref BedrockEmbeddingModel
+      Policies:
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/*
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:*
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource:
+                - !Sub arn:aws:s3:::${StorageStack.Outputs.S3Transcripts}/*
+                - !Sub arn:aws:s3:::${StorageStack.Outputs.S3Audio}/*
+            - Effect: Allow
+              Action:
+                - dynamodb:UpdateItem
+              Resource:
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DatabaseStack.Outputs.DynamodbTable}
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DatabaseStack.Outputs.DynamodbTable}/*
+            - Effect: Allow
+              Action:
+                - polly:StartSpeechSynthesisTask
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - sns:Publish
+              Resource: !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:*
+
+  GetframesLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${Getframes}
+      KmsKeyId: !GetAtt KmsKey.Arn
+      RetentionInDays: 365
+
+  Gettasks:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: VPC not required
+    Properties:
+      CodeUri: functions/gettasks
+      Environment:
+        Variables:
+          vsh_dynamodb_table: !GetAtt DatabaseStack.Outputs.DynamodbTable
+          bucket_input_video: !GetAtt StorageStack.Outputs.S3VideosInput
+          bucket_output_video: !GetAtt StorageStack.Outputs.S3VideosOutput
+      Policies:
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+              Resource:
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DatabaseStack.Outputs.DynamodbTable}
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DatabaseStack.Outputs.DynamodbTable}/*
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:*
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource:
+                - !Sub arn:aws:s3:::${StorageStack.Outputs.S3VideosInput}/*
+                - !Sub arn:aws:s3:::${StorageStack.Outputs.S3VideosOutput}/*
+
+      Events:
+        HttpApiEvent:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /gettasks
+            Method: GET
+
+  GettasksLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${Gettasks}
+      KmsKeyId: !GetAtt KmsKey.Arn
+      RetentionInDays: 365
+
+  Gettaskstatus:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: VPC not required
+    Properties:
+      CodeUri: functions/gettaskstatus
+      Environment:
+        Variables:
+          vsh_dynamodb_table: !GetAtt DatabaseStack.Outputs.DynamodbTable
+          bucket_input_video: !GetAtt StorageStack.Outputs.S3VideosInput
+          bucket_output_video: !GetAtt StorageStack.Outputs.S3VideosOutput
+      Policies:
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource:
+                - !Sub arn:aws:s3:::${StorageStack.Outputs.S3VideosInput}/*
+                - !Sub arn:aws:s3:::${StorageStack.Outputs.S3VideosOutput}/*
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+              Resource:
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DatabaseStack.Outputs.DynamodbTable}
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DatabaseStack.Outputs.DynamodbTable}/*
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:*
+      Events:
+        HttpApiEvent:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /gettaskstatus
+            Method: GET
+
+  GettaskstatusLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${Gettaskstatus}
+      KmsKeyId: !GetAtt KmsKey.Arn
+      RetentionInDays: 365
+
+  Getvoices:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: VPC not required
+          - id: W11
+            reason: Polly voices do not have individual resource arn
+    Properties:
+      CodeUri: functions/getvoices
+      Policies:
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - polly:DescribeVoices
+              Resource: "*"
+      Events:
+        HttpApiEvent:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /getvoices
+            Method: GET
+
+  GetvoicesLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${Getvoices}
+      KmsKeyId: !GetAtt KmsKey.Arn
+      RetentionInDays: 365
+
+  Outputvideo:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: VPC not required
+          - id: W11
+            reason: MediaConvert jobs only support resource *
+    Properties:
+      CodeUri: functions/outputvideo
+      Environment:
+        Variables:
+          bucket_videos: !GetAtt StorageStack.Outputs.S3VideosInput
+          bucket_audio: !GetAtt StorageStack.Outputs.S3Audio
+          bucket_transcripts: !GetAtt StorageStack.Outputs.S3Transcripts
+          bucket_output_videos: !GetAtt StorageStack.Outputs.S3VideosOutput
+          media_convert_queue: !GetAtt MediaConvertQueueRelease.Arn
+          vsh_dynamodb_table: !GetAtt DatabaseStack.Outputs.DynamodbTable
+          iam_role: !GetAtt MediaConvertRole.Arn
+      Policies:
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource:
+                - !Sub arn:aws:s3:::${StorageStack.Outputs.S3VideosInput}/*
+                - !Sub arn:aws:s3:::${StorageStack.Outputs.S3Audio}/*
+                - !Sub arn:aws:s3:::${StorageStack.Outputs.S3Transcripts}/*
+                - !Sub arn:aws:s3:::${StorageStack.Outputs.S3VideosOutput}/*
+            - Effect: Allow
+              Action:
+                - dynamodb:UpdateItem
+              Resource:
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DatabaseStack.Outputs.DynamodbTable}
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DatabaseStack.Outputs.DynamodbTable}/*
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:*
+            - Effect: Allow
+              Action:
+                - iam:PassRole
+              Condition:
+                StringLike:
+                  "iam:PassedToService":
+                    - mediaconvert.amazonaws.com
+              Resource: !GetAtt MediaConvertRole.Arn
+            - Effect: Allow
+              Action:
+                - mediaconvert:CreateJob
+                - mediaconvert:DescribeEndpoints
+              Resource: arn:aws:mediaconvert:*
+
+  OutputvideoLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${Outputvideo}
+      KmsKeyId: !GetAtt KmsKey.Arn
+      RetentionInDays: 365
+
+  PollySns:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: VPC not required
+    Properties:
+      CodeUri: functions/polly_sns
+      Environment:
+        Variables:
+          bucket_audio: !GetAtt StorageStack.Outputs.S3Audio
+          bucket_transcripts: !GetAtt StorageStack.Outputs.S3Transcripts
+          vsh_dynamodb_table: !GetAtt DatabaseStack.Outputs.DynamodbTable
+          SNSTopic: !GetAtt RequestManagementStack.Outputs.SnsArn
+      Policies:
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:*
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+              Resource:
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DatabaseStack.Outputs.DynamodbTable}
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DatabaseStack.Outputs.DynamodbTable}/*
+            - Effect: Allow
+              Action:
+                - states:Create*
+                - states:Delete*
+                - states:Describe*
+                - states:List*
+                - states:Start*
+                - states:Send*
+              Resource: !Sub arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*
+      Events:
+        Sns:
+          Type: SNS
+          Properties:
+            Topic: !GetAtt RequestManagementStack.Outputs.SnsArn
+
+  PollySnsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${PollySns}
+      KmsKeyId: !GetAtt KmsKey.Arn
+      RetentionInDays: 365
+
+  PresignedurlVideo:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: VPC not required
+    Properties:
+      CodeUri: functions/presignedurl_video
+      Environment:
+        Variables:
+          bucket_videos: !GetAtt StorageStack.Outputs.S3VideosInput
+      Policies:
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource: !Sub arn:aws:s3:::${StorageStack.Outputs.S3VideosInput}/*
+      Events:
+        HttpApiEvent:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /presignedurl_video
+            Method: GET
+            # Auth:
+            #   Authorizer: NONE
+
+  PresignedurlVideoLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${PresignedurlVideo}
+      KmsKeyId: !GetAtt KmsKey.Arn
+      RetentionInDays: 365
+
+  Sqs:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: VPC not required
+    Properties:
+      CodeUri: functions/sqs
+      Environment:
+        Variables:
+          bucket_videos: !GetAtt StorageStack.Outputs.S3VideosInput
+          sqs_queue_url: !GetAtt RequestManagementStack.Outputs.SqsUrl
+          vsh_dynamodb_table: !GetAtt DatabaseStack.Outputs.DynamodbTable
+          task_expire_time: !Ref TaskExpireTime
+      Policies:
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:*
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource:
+                - !Sub arn:aws:s3:::${StorageStack.Outputs.S3VideosInput}/*
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+              Resource:
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DatabaseStack.Outputs.DynamodbTable}
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DatabaseStack.Outputs.DynamodbTable}/*
+
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+                - sqs:DeleteMessage
+                - sqs:GetQueueAttributes
+              Resource: !GetAtt RequestManagementStack.Outputs.SqsArn
+      Events:
+        HttpApiEvent:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /stepfunction
+            Method: GET
+
+  SqsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${Sqs}
+      KmsKeyId: !GetAtt KmsKey.Arn
+      RetentionInDays: 365
+
+  Stepfunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: VPC not required
+    Properties:
+      CodeUri: functions/stepfunction
+      Environment:
+        Variables:
+          StepFunction: !Ref StateMachine
+          vsh_dynamodb_table: !GetAtt DatabaseStack.Outputs.DynamodbTable
+          sqs_queue_url: !GetAtt RequestManagementStack.Outputs.SqsUrl
+      Policies:
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:*
+            - Effect: Allow
+              Action:
+                - states:Create*
+                - states:Delete*
+                - states:Describe*
+                - states:List*
+                - states:Start*
+                - states:Send*
+              Resource: !Sub arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*
+            - Effect: Allow
+              Action:
+                - sqs:ReceiveMessage
+                - sqs:DeleteMessage
+                - sqs:GetQueueAttributes
+              Resource: !GetAtt RequestManagementStack.Outputs.SqsArn
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt RequestManagementStack.Outputs.SqsArn
+            BatchSize: 1
+            Enabled: True
+
+  StepfunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${Stepfunction}
+      KmsKeyId: !GetAtt KmsKey.Arn
+      RetentionInDays: 365
+
+  Summarizetext:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: VPC not required
+    Properties:
+      CodeUri: functions/summarizetext
+      Timeout: 900
+      Environment:
+        Variables:
+          bucket_transcripts: !GetAtt StorageStack.Outputs.S3Transcripts
+          bedrock_endpoint_region: !Ref AWS::Region
+          bedrock_endpoint_model: !Ref BedrockEndpointModel
+      Policies:
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource:
+                - !Sub arn:aws:s3:::${StorageStack.Outputs.S3Transcripts}/*
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/*
+
+  SummarizetextLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${Summarizetext}
+      KmsKeyId: !GetAtt KmsKey.Arn
+      RetentionInDays: 365
+
+  Text2speech:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: VPC not required
+          - id: W11
+            reason: Polly action doesn't take resource
+    Properties:
+      CodeUri: functions/text2speech
+      Environment:
+        Variables:
+          bucket_transcripts: !GetAtt StorageStack.Outputs.S3Transcripts
+          bucket_audio: !GetAtt StorageStack.Outputs.S3Audio
+          vsh_dynamodb_table: !GetAtt DatabaseStack.Outputs.DynamodbTable
+          SNSTopic: !GetAtt RequestManagementStack.Outputs.SnsArn
+      Policies:
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:*
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource:
+                - !Sub arn:aws:s3:::${StorageStack.Outputs.S3Transcripts}/*
+                - !Sub arn:aws:s3:::${StorageStack.Outputs.S3Audio}/*
+            - Effect: Allow
+              Action:
+                - dynamodb:UpdateItem
+              Resource:
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DatabaseStack.Outputs.DynamodbTable}
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DatabaseStack.Outputs.DynamodbTable}/*
+            - Effect: Allow
+              Action:
+                - polly:StartSpeechSynthesisTask
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - sns:Publish
+              Resource: !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:*
+
+  Text2speechLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${Text2speech}
+      KmsKeyId: !GetAtt KmsKey.Arn
+      RetentionInDays: 365
+
+  Transcribe:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: VPC not required
+    Properties:
+      CodeUri: functions/transcribe
+      Environment:
+        Variables:
+          bucket_videos: !GetAtt StorageStack.Outputs.S3VideosInput
+          bucket_transcripts: !GetAtt StorageStack.Outputs.S3Transcripts
+          vsh_dynamodb_table: !GetAtt DatabaseStack.Outputs.DynamodbTable
+      Policies:
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource:
+                - !Sub arn:aws:s3:::${StorageStack.Outputs.S3VideosInput}/*
+                - !Sub arn:aws:s3:::${StorageStack.Outputs.S3Transcripts}/*
+            - Effect: Allow
+              Action:
+                - dynamodb:UpdateItem
+              Resource:
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DatabaseStack.Outputs.DynamodbTable}
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DatabaseStack.Outputs.DynamodbTable}/*
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:*
+            - Effect: Allow
+              Action:
+                - transcribe:StartTranscriptionJob
+              Resource: !Sub arn:aws:transcribe:${AWS::Region}:${AWS::AccountId}:*
+
+  TranscribeLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${Transcribe}
+      KmsKeyId: !GetAtt KmsKey.Arn
+      RetentionInDays: 365
+
+  MediaConvertQueue:
+    Type: AWS::MediaConvert::Queue
+
+  MediaConvertQueueRelease:
+    Type: AWS::MediaConvert::Queue
+
+  MediaConvertRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: MediaConvert resources only support *
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Principal:
+              Service: mediaconvert.amazonaws.com
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub arn:aws:mediaconvert:${AWS::Region}:${AWS::AccountId}:*
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonAPIGatewayInvokeFullAccess
+      Policies:
+        - PolicyName: MediaConvert
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                Resource: "*"
+                Condition:
+                  StringLike:
+                    "kms:ViaService": s3.*.amazonaws.com
+              - Effect: Allow
+                Action:
+                  - mediaconvert:CreateJob
+                  - mediaconvert:CreateJobTemplate
+                  - mediaconcvert:CreatePreset
+                  - mediaconvert:CreateQueue
+                  - mediaconvert:UpdateJobTemplate
+                  - mediaconvert:UpdatePreset
+                  - mediaconvert:UpdateQueue
+                Resource: arn:aws:mediaconvert:*
+              - Effect: Allow
+                Action:
+                  - s3:ListAllMyBuckets
+                  - s3:ListBucket
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource:
+                  - !Sub arn:aws:s3:::${StorageStack.Outputs.S3VideosInput}/*
+                  - !Sub arn:aws:s3:::${StorageStack.Outputs.S3VideosOutput}/*
+                  - !Sub arn:aws:s3:::${StorageStack.Outputs.S3Audio}/*
+                  - !Sub arn:aws:s3:::${StorageStack.Outputs.S3Transcripts}/*
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: !Sub arn:aws:iam::${AWS::AccountId}:role/vsh-MediaConvertRole-*
+                Condition:
+                  StringLike:
+                    "iam:PassedToService":
+                      - mediaconvert.amazonaws.com
+  StateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/sfn/${AWS::StackName}
+      KmsKeyId: !GetAtt KmsKey.Arn
+      RetentionInDays: 365
+
+  StateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionUri: step_function.json
+      DefinitionSubstitutions:
+        TranscribeArn: !GetAtt Transcribe.Arn
+        FailedtaskArn: !GetAtt Failedtask.Arn
+        SummarizetextArn: !GetAtt Summarizetext.Arn
+        Text2speechArn: !GetAtt Text2speech.Arn
+        GetframesArn: !GetAtt Getframes.Arn
+        OutputvideoArn: !GetAtt Outputvideo.Arn
+        AddaudioArn: !GetAtt Addaudio.Arn
+      Tracing:
+        Enabled: True
+      Logging:
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt StateMachineLogGroup.Arn
+        IncludeExecutionData: True
+        Level: ERROR
+      Policies:
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+                - xray:PutTraceSegments
+                - xray:PutTelemetryRecords
+                - xray:GetSamplingRules
+                - xray:GetSamplingTargets
+              Resource:
+                - arn:aws:lambda:*:*:*
+                - arn:aws:xray:*:*:*
+            - Effect: Allow
+              Action:
+                - logs:CreateLogDelivery
+                - logs:CreateLogStream
+                - logs:GetLogDelivery
+                - logs:UpdateLogDelivery
+                - logs:DeleteLogDelivery
+                - logs:ListLogDeliveries
+                - logs:PutLogEvents
+                - logs:PutResourcePolicy
+                - logs:DescribeResourcePolicies
+                - logs:DescribeLogGroups
+                - logs:PutSubscriptionFilter
+              Resource: "*"
+
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/api/${AWS::StackName}
+      KmsKeyId: !GetAtt KmsKey.Arn
+      RetentionInDays: 365
+
+  Api:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowMethods:
+          - "GET"
+        AllowHeaders:
+          - "content-type"
+          - "Authorization"
+        MaxAge: 300
+      AccessLogSettings:
+        DestinationArn: !GetAtt ApiLogGroup.Arn
+        Format: >-
+          {"requestId":"$context.requestId","ip":"$context.identity.sourceIp","user":"$context.identity.user","method":"$context.httpMethod","status":"$context.status","route":"$context.routeKey","responseLength":"$context.responseLength"}
+      Auth:
+        Authorizers:
+          CognitoAuthorizer:
+            JwtConfiguration:
+              issuer: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${CognitoStack.Outputs.UserPoolsId}
+              audience:
+                - !GetAtt CognitoStack.Outputs.UserPoolsWebClientId
+            IdentitySource: "$request.header.Authorization"
+        DefaultAuthorizer: CognitoAuthorizer
+
+  DatabaseStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: templates/database.yaml
+      Parameters:
+        KmsKeyArn: !GetAtt KmsKey.Arn
+
+  RequestManagementStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: templates/request-management.yaml
+      Parameters:
+        KmsKeyArn: !GetAtt KmsKey.Arn
+
+  StorageStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: templates/storage.yaml
+
+  CognitoStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: templates/cognito.yaml
+
+  HostingStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: templates/hosting.yaml
+      Parameters:
+        LoggingBucket: !GetAtt StorageStack.Outputs.S3Logging
+
+Outputs:
+  ApiEndpoint:
+    Value: !Sub https://${Api}.execute-api.${AWS::Region}.${AWS::URLSuffix}
+
+  Region:
+    Value: !Ref AWS::Region
+
+  CognitoUserPoolID:
+    Value: !GetAtt CognitoStack.Outputs.UserPoolsId
+
+  CognitoWebClientID:
+    Value: !GetAtt CognitoStack.Outputs.UserPoolsWebClientId
+
+  WebUIBucket:
+    Value: !GetAtt HostingStack.Outputs.Bucket
+
+  WebUrl:
+    Value: !GetAtt HostingStack.Outputs.DomainName

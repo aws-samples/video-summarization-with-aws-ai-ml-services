@@ -1,0 +1,28 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+  KmsKeyArn:
+    Type: String
+
+Resources:
+  SnsPollyTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      KmsMasterKeyId: !Ref KmsKeyArn
+
+  SqsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 60
+      VisibilityTimeout: 300
+      KmsMasterKeyId: !Ref KmsKeyArn
+
+Outputs:
+  SnsArn:
+    Value: !Ref SnsPollyTopic
+
+  SqsUrl:
+    Value: !Ref SqsQueue
+
+  SqsArn:
+    Value: !GetAtt SqsQueue.Arn
