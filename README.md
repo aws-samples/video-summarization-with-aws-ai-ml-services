@@ -91,7 +91,7 @@ The authenication is managed by Amazon Cognito. You will need to create a new us
 
 ### Login to your new web application
 
-Once complete, the CLI output will show a value for the CloudFront URL to be able to view the web application, e.g. https://d123abc.cloudfront.net/
+Once complete, the CLI output will show a value for the CloudFront URL to be able to view the web application, e.g. `https://d123abc.cloudfront.net/`
 
 ### User Interface
 
