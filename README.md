@@ -44,18 +44,16 @@ For further information, please refer to the links below:
 - Docker
 
   This solution has been built and tested using SAM CLI in conjunction with [Docker Desktop](https://www.docker.com/products/docker-desktop/) to make the build process as smooth as possible. It is possible to build and deploy this solution without Docker but we recommend using Docker as it reduces the number of local dependancies needed.
-  Note that the npm `deploy` script described below requires Docker to be installed.
+  Note that the `deploy` script described below requires Docker to be installed.
 
 ## Amazon Bedrock requirements
 
-**Base Models Access**
+This solution uses the following Amazon Bedrock models:
 
-If you are looking to interact with models from Amazon Bedrock, you need to [request access to the base models in one of the regions where Amazon Bedrock is available](https://console.aws.amazon.com/bedrock/home?#/modelaccess). Make sure to read and accept models' end-user license agreements or EULA.
+- **Claude Sonnet 4.5**
+- **Amazon Nova 2 Multimodal Embeddings**
 
-Note:
-
-- You can deploy the solution to a different region from where you requested Base Model access.
-- While the Base Model access approval is instant, it might take several minutes to get access and see the list of models in the console.
+You need to have access to these models in the Amazon Bedrock before deploying the solution.
 
 ## Deployment
 
@@ -78,16 +76,14 @@ cd video-summarization-with-aws-ai-ml-services
 3. Start the deployment
 
 ```bash
-cd frontend
-npm install
-npm run deploy
+./scripts/deploy.sh
 ```
 
 The deployment can take approximately 5-10 minutes.
 
 ### Create login details for the web application
 
-The authenication is managed by Amazon Cognito. You will need to create a new user to be able to login.
+The authenication is managed by Amazon Cognito. You can sign up directly from the login page.
 
 ### Login to your new web application
 
@@ -96,6 +92,21 @@ Once complete, the CLI output will show a value for the CloudFront URL to be abl
 ### User Interface
 
 ![UI](assets/video-summarization-ui.gif "Video Summarization UI")
+
+## Cleanup
+
+To delete all resources created by this solution, run:
+
+```bash
+./scripts/delete.sh
+```
+
+This script will:
+
+- Empty all S3 buckets (including versioned objects)
+- Delete the CloudFormation stack and all associated resources
+
+You will be prompted for confirmation before deletion begins.
 
 ## Security
 

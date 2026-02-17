@@ -75,23 +75,43 @@ def text_embedding(original_sentences, polly_ssml):
     accept = "application/json"
     content_type = "application/json"
     original_embeddings = []
-    for str in original_sentences:
-        body = json.dumps({"inputText": str})
+    for text in original_sentences:
+        body = json.dumps({
+            "taskType": "SINGLE_EMBEDDING",
+            "singleEmbeddingParams": {
+                "embeddingPurpose": "GENERIC_INDEX",
+                "embeddingDimension": 3072,
+                "text": {
+                    "truncationMode": "END",
+                    "value": text
+                }
+            }
+        })
         response = bedrock_client.invoke_model(
             body=body, modelId=model_id, accept=accept, contentType=content_type
         )
         response_body = json.loads(response["body"].read())
-        original_embeddings.append(response_body.get("embedding"))
+        original_embeddings.append(response_body["embeddings"][0]["embedding"])
     original_embeddings = np.array(original_embeddings)
 
     summarized_embeddings = []
-    for str in summarized_sentences:
-        body = json.dumps({"inputText": str})
+    for text in summarized_sentences:
+        body = json.dumps({
+            "taskType": "SINGLE_EMBEDDING",
+            "singleEmbeddingParams": {
+                "embeddingPurpose": "GENERIC_INDEX",
+                "embeddingDimension": 3072,
+                "text": {
+                    "truncationMode": "END",
+                    "value": text
+                }
+            }
+        })
         response = bedrock_client.invoke_model(
             body=body, modelId=model_id, accept=accept, contentType=content_type
         )
         response_body = json.loads(response["body"].read())
-        summarized_embeddings.append(response_body.get("embedding"))
+        summarized_embeddings.append(response_body["embeddings"][0]["embedding"])
     summarized_embeddings = np.array(summarized_embeddings)
 
     similarity_matrix = np_cosine_similarity(summarized_embeddings, original_embeddings)

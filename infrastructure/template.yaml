@@ -5,10 +5,10 @@ Transform: AWS::Serverless-2016-10-31
 Parameters:
   BedrockEndpointModel:
     Type: String
-    Default: anthropic.claude-v2
+    Default: us.anthropic.claude-sonnet-4-5-20250929-v1:0
   BedrockEmbeddingModel:
     Type: String
-    Default: amazon.titan-embed-text-v1
+    Default: amazon.nova-2-multimodal-embeddings-v1:0
   TaskExpireTime:
     Type: Number
     Default: 86400
@@ -312,7 +312,9 @@ Resources:
             - Effect: Allow
               Action:
                 - bedrock:InvokeModel
-              Resource: !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/*
+              Resource:
+                - arn:aws:bedrock:*::foundation-model/*
+                - !Sub arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*
             - Effect: Allow
               Action:
                 - kms:Encrypt
@@ -788,7 +790,9 @@ Resources:
             - Effect: Allow
               Action:
                 - bedrock:InvokeModel
-              Resource: !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/*
+              Resource:
+                - arn:aws:bedrock:*::foundation-model/*
+                - !Sub arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*
 
   SummarizetextLogGroup:
     Type: AWS::Logs::LogGroup
