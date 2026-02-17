@@ -21,26 +21,37 @@ def lambda_handler(event, context):
     accept = "application/json"
     contentType = "application/json"
 
-    prompt = f"""\n\nHuman: Summarize the key points from the following video content:
+    user_message = f"""Create a narrative summary of the following video transcript. Write it as a flowing storyline that could be read aloud as voice narration.
 
-    {original_text} 
+{original_text}
 
-    \n\nThe summary should only contain information present in the video content. Do not include any new or unrelated information. Make each sentence highly semantically similar to a sentence in the video content.
-    \n\nAssistant: Here is a summary of the video: """
+Requirements:
+- Keep the summary between 150-225 words (approximately 60-90 seconds when spoken)
+- Write in plain prose without any headlines, titles, sections, bullet points, or formatting
+- Keep the natural flow and story arc of the original content
+- Each sentence should closely mirror the meaning of sentences in the original transcript
+- Only include information present in the transcript
+- Write in a conversational tone suitable for voice-over narration"""
+
     body = json.dumps(
         {
-            "prompt": prompt,
-            "max_tokens_to_sample": 1024,
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 1024,
             "temperature": 0.25,
-            "top_p": 0.9,
-            "stop_sequences": ["\\n\\nHuman:"],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": user_message
+                }
+            ],
+            "system": "You are a narrator creating voice-over scripts. Output only the narration text with no formatting, headers, or meta-commentary."
         }
     )
     response = bedrock_client.invoke_model(
         body=body, modelId=modelId, accept=accept, contentType=contentType
     )
     response_body = json.loads(response.get("body").read())
-    summarized_text = response_body["completion"]
+    summarized_text = response_body["content"][0]["text"]
 
     write_text_to_s3(summarized_text, bucket_transcripts, taskId + ".txt")
 
